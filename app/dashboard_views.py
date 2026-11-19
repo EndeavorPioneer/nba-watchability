@@ -6,6 +6,7 @@ import os
 import sys
 import datetime as dt
 import textwrap
+from pathlib import Path
 from typing import Tuple, Dict, List
 
 import altair as alt
@@ -408,6 +409,25 @@ div[data-testid="collapsedControl"] {display: none;}
   border-color: transparent transparent rgba(49,51,63,0.20) transparent;
 }
 
+/* Matchup cards can be narrow even on a desktop-sized Safari viewport. */
+.st-key-dashboard_layout [data-testid="stMarkdown"], .rec-card:not(.menu-row) {
+  container-type: inline-size;
+}
+@container (max-width: 580px) {
+  .menu-row {
+    display: grid; grid-template-columns: minmax(0, 90px) minmax(0, 1fr);
+    align-items: start; gap: 8px 10px;
+  }
+  .menu-awi {min-width: 0; width: auto;}
+  .menu-matchup {min-width: 0;}
+  .menu-matchup .name {white-space: normal; overflow-wrap: anywhere;}
+  .menu-meta {grid-column: 1 / -1; width: auto; padding-left: 0;}
+  .matchup-badges {margin-left: 0;}
+}
+@container (max-width: 240px) {
+  .menu-row {grid-template-columns: minmax(0, 1fr);}
+}
+
 /* Use one column at touch/tablet widths as well as narrow phones. Streamlit's
    default column breakpoint otherwise leaves an undersized chart on some folds. */
 .recs-mobile {display: none;}
@@ -521,49 +541,30 @@ section[data-testid="stSidebar"] {display: none;}
     )
 
 
-def inject_autorefresh(ms: int = 3_600_000) -> None:
+def inject_live_score_refresh() -> None:
+    """Update just live score text, keeping the chart, day and scroll in place."""
     from streamlit.components.v1 import html
 
+    code = Path(__file__).with_name("live_scores.js").read_text(encoding="utf-8")
     html(
-        f"""
-        <script>
-            // This runs in a Streamlit component iframe, not the dashboard.
-            // Reload the page only on a real return, not on initial focus,
-            // opening a control, or switching the device's screen size.
-            let page;
-            try {{
-                page = window.parent;
-                if (page === window || !page.document) throw new Error();
-            }} catch (_) {{
-                page = window;
-            }}
-            let hidden = page.document.visibilityState === "hidden";
-            let reloading = false;
-            function reload() {{
-                if (reloading || page.document.visibilityState !== "visible") return;
-                reloading = true;
-                page.location.reload();
-            }}
-            function visibilityChanged() {{
-                if (page.document.visibilityState === "hidden") {{
-                    hidden = true;
-                }} else if (hidden) {{
-                    reload();
-                }}
-            }}
-            function pageShown(event) {{
-                if (event.persisted) reload();
-            }}
-            page.document.addEventListener("visibilitychange", visibilityChanged);
-            page.addEventListener("pageshow", pageShown);
-            const refreshTimer = setInterval(reload, {int(ms)});
-            // Streamlit may recreate the iframe on a widget rerun.
-            window.addEventListener("pagehide", (event) => {{
-                if (event.persisted) return;
-                page.document.removeEventListener("visibilitychange", visibilityChanged);
-                page.removeEventListener("pageshow", pageShown);
-                clearInterval(refreshTimer);
-            }});
+        "<script>" + code + """
+        try {
+            // Dashboard markup lives in the same-origin parent, not this
+            // Streamlit iframe. Replacing the component removes its old timer.
+            const page = window.parent;
+            if (page !== window && page.document) {
+                const key = "__nbaDuoLiveScoreFrameStop";
+                if (typeof page[key] === "function") page[key]();
+                const stop = startNbaDuoLiveScores(page);
+                page[key] = stop;
+                window.addEventListener("pagehide", (event) => {
+                    if (!event.persisted && page[key] === stop) {
+                        stop();
+                        delete page[key];
+                    }
+                });
+            }
+        } catch (_) { /* A sandboxed embed should keep its server-rendered scores. */ }
         </script>
         """,
         height=0,
@@ -2415,7 +2416,7 @@ def render_table(
 
 def render_full_dashboard(title: str, caption: str) -> None:
     inject_base_css()
-    inject_autorefresh()
+    inject_live_score_refresh()
 
     st.markdown("<div id='top'></div>", unsafe_allow_html=True)
     st.title(title)
