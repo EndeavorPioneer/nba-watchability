@@ -113,4 +113,4 @@ def get_logo_url(team_name: str, size: int = 500) -> Optional[str]:
     size_i = int(size) if size is not None else 500
     if size_i not in {500, 200}:
         size_i = 500
-    return f"https://a.espncdn.com/i/teamlogos/nba/{size_i}/{abbr}.png"
+    return f"https://a.espncdn.com/i/teamlogos/nba/{size_i}/{abbr.lower()}.png"

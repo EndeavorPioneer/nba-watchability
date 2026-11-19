@@ -6,6 +6,7 @@ import os
 import sys
 import datetime as dt
 import textwrap
+from pathlib import Path
 from typing import Tuple, Dict, List
 
 import altair as alt
@@ -19,7 +20,8 @@ from core.odds_api import fetch_nba_spreads_window
 from core.schedule_espn import fetch_games_for_date
 from core.standings import _normalize_team_name, get_record, get_win_pct
 from core.standings_espn import fetch_team_standings_detail_maps
-from core.team_meta import get_logo_url, get_team_abbr, get_team_mascot
+from core.team_meta import get_team_abbr, get_team_mascot
+from app.team_logos import load_team_logos
 from core.health_espn import compute_team_player_impacts, injury_weight
 from core.importance import compute_importance_detail_map
 from core.watchability_v2_params import KEY_INJURY_IMPACT_SHARE_THRESHOLD, INJURY_OVERALL_IMPORTANCE_WEIGHT
@@ -27,6 +29,26 @@ from core.build_watchability_df import build_watchability_df
 from core.build_watchability_forecast_df import build_watchability_forecast_df
 
 import core.watchability as watch
+
+
+def _attach_team_logos(df: pd.DataFrame) -> pd.DataFrame:
+    """Resolve logos after choosing the slate; old forecast URLs need no rebuild."""
+    if df is None or df.empty or "_Away logo" in df:
+        return df
+    out = df.copy()
+    teams = out[["Away team", "Home team"]].fillna("").astype(str)
+    logos = load_team_logos(teams.to_numpy().ravel().tolist())
+    for side in ("Away", "Home"):
+        out[f"_{side} logo"] = teams[f"{side} team"].map(logos)
+    return out
+
+
+def _team_logo_html(team: str, source: str | None) -> str:
+    if isinstance(source, str) and source:
+        # The team name is the adjacent visible label; the image is decorative.
+        return f'<img class="team-logo" src="{py_html.escape(source, quote=True)}" alt="" width="34" height="34">'
+    abbr = py_html.escape(get_team_abbr(team) or team[:3].upper() or "—")
+    return f'<span class="team-logo team-logo-fallback" aria-hidden="true">{abbr}</span>'
 
 
 def _merge_live_and_forecast_df(live_df: pd.DataFrame, forecast_df: pd.DataFrame) -> pd.DataFrame:
@@ -200,7 +222,16 @@ div[data-testid="collapsedControl"] {display: none;}
 .menu-teams .at {opacity: 0.6; padding: 0 2px;}
 .menu-matchup {flex: 1; min-width: 0; display:flex; flex-direction: column; gap: 2px;}
 .menu-matchup .teamline {display:flex; align-items:center; gap:8px; min-width: 0; flex-wrap: wrap; row-gap: 2px;}
-.menu-matchup img {width: 34px; height: 34px;}
+.team-logo {
+  flex: 0 0 34px; inline-size: 34px; block-size: 34px; object-fit: contain;
+}
+.team-logo-fallback {
+  display: inline-grid; place-items: center; box-sizing: border-box;
+  border-radius: 50%; border: 1px solid rgba(49,51,63,0.18);
+  font-size: 10px; font-weight: 750; color: rgb(49,51,63);
+  background: rgba(49,51,63,0.06);
+}
+.menu-matchup .teamline {flex-wrap: nowrap;}
 .menu-matchup .name {flex: 1 1 auto; min-width: 0; font-size: 16px; font-weight: 800; color: rgba(0,0,0,0.90); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
 .menu-matchup .name-full {display: inline;}
 .menu-matchup .name-short {display: none;}
@@ -281,7 +312,7 @@ div[data-testid="collapsedControl"] {display: none;}
 .rec-row {margin-top: 8px; display:flex; align-items:center; gap:10px;}
 .rec-teams {flex:1; display:flex; flex-direction: column; gap:6px; min-width: 0;}
 .rec-teamline {display:flex; align-items:center; gap:8px; min-width: 0; flex-wrap: wrap; row-gap: 2px;}
-.rec-teamline img {width: 34px; height: 34px;}
+
 .rec-teamline .name {flex: 1 1 auto; min-width: 0; font-size: 16px; font-weight: 800; color: rgba(0,0,0,0.90); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
 .rec-teamline .name-full {display: inline;}
 .rec-teamline .name-short {display: none;}
@@ -378,26 +409,75 @@ div[data-testid="collapsedControl"] {display: none;}
   border-color: transparent transparent rgba(49,51,63,0.20) transparent;
 }
 
-/* Mobile layout: prevent overlap by stacking meta below matchup. */
-@media (max-width: 640px) {
-  .menu-row {flex-wrap: wrap; align-items: flex-start; gap: 8px 10px;}
-  .menu-awi {width: 92px;}
-  .menu-matchup {min-width: 0; flex: 1 1 calc(100% - 102px);}
-  .menu-meta {width: 100%; padding-left: 92px; font-size: 14px; line-height: 1.35;}
-  .menu-matchup .record {font-size: 11px;}
-  .matchup-badges {margin-left: 42px;}
-  .menu-matchup .name-full {display: none;}
-  .menu-matchup .name-short {display: inline;}
-  .rec-teamline .name-full {display: none;}
-  .rec-teamline .name-short {display: inline;}
-  .day-rank-chip {font-size: 13px; padding: 4px 10px;}
-  .day-rank-count {font-size: 12px;}
+/* Matchup cards can be narrow even on a desktop-sized Safari viewport. */
+.st-key-dashboard_layout [data-testid="stMarkdown"], .rec-card:not(.menu-row) {
+  container-type: inline-size;
+}
+@container (max-width: 580px) {
+  .menu-row {
+    display: grid; grid-template-columns: minmax(0, 90px) minmax(0, 1fr);
+    align-items: start; gap: 8px 10px;
+  }
+  .menu-awi {min-width: 0; width: auto;}
+  .menu-matchup {min-width: 0;}
+  .menu-matchup .name {white-space: normal; overflow-wrap: anywhere;}
+  .menu-meta {grid-column: 1 / -1; width: auto; padding-left: 0;}
+  .matchup-badges {margin-left: 0;}
+}
+@container (max-width: 240px) {
+  .menu-row {grid-template-columns: minmax(0, 1fr);}
 }
 
-/* On mobile, show Recommendations above the All Games menu. */
+/* Use one column at touch/tablet widths as well as narrow phones. Streamlit's
+   default column breakpoint otherwise leaves an undersized chart on some folds. */
 .recs-mobile {display: none;}
 .recs-desktop {display: block;}
 
+@media (max-width: 900px) {
+  .st-key-dashboard_layout [data-testid="stHorizontalBlock"] {
+    flex-direction: column;
+    gap: 0;
+  }
+  .st-key-dashboard_layout [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    width: 100% !important;
+    flex: 0 0 auto !important;
+  }
+  .st-key-dashboard_layout [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child {
+    display: none;
+  }
+  .recs-mobile {display: block;}
+  .recs-desktop {display: none;}
+  .rec-head {margin-top: 1rem;}
+}
+
+@media (max-width: 640px) {
+  .block-container {padding-inline: max(0.75rem, env(safe-area-inset-left)) max(0.75rem, env(safe-area-inset-right));}
+  .menu-row {
+    display: grid; grid-template-columns: minmax(0, 90px) minmax(0, 1fr);
+    align-items: start; gap: 8px 10px;
+  }
+  .menu-awi {width: auto;}
+  .menu-meta {grid-column: 1 / -1; width: auto; font-size: 14px; line-height: 1.35;}
+  .menu-matchup .name-full, .rec-teamline .name-full {display: none;}
+  .menu-matchup .name-short, .rec-teamline .name-short {display: inline;}
+  .menu-matchup .name {white-space: normal; overflow-wrap: anywhere;}
+  .menu-matchup .record-inline {display: inline-block;}
+  .day-rank-chip {font-size: 13px; padding: 6px 10px; min-height: 32px;}
+  .day-rank-count {font-size: 12px;}
+  [data-testid="stSegmentedControl"] [role="radiogroup"],
+  [data-testid="stButtonGroup"] [role="radiogroup"]:has(> button[data-variant="segmented_control"]) {
+    display: flex; flex-wrap: wrap; gap: 4px; width: 100%; overflow: visible;
+  }
+  [data-testid="stButtonGroup"] button[data-variant="segmented_control"],
+  [data-testid="stSegmentedControl"] [role="radiogroup"] label {min-height: 44px;}
+}
+
+@media (max-width: 400px) {
+  .team-logo {flex-basis: 28px; inline-size: 28px; block-size: 28px;}
+  .matchup-badges {margin-left: 0;}
+  .menu-matchup .teamline, .rec-teamline {gap: 5px;}
+  .menu-matchup .name {font-size: 14px;}
+}
 /* Day selector chips */
 [data-testid="stSegmentedControl"] > label {margin-bottom: 0.25rem;}
 [data-testid="stSegmentedControl"] [role="radiogroup"] {
@@ -433,18 +513,14 @@ div[data-testid="collapsedControl"] {display: none;}
 
 @media (max-width: 640px) {
   [data-testid="stSegmentedControl"] [role="radiogroup"] label {
-    min-height: 34px;
-    padding: 0 14px;
+    min-height: 44px;
+    padding: 0 10px;
   }
   [data-testid="stSegmentedControl"] [role="radiogroup"] label p {
     font-size: 11px;
   }
 }
 
-@media (max-width: 640px) {
-  .recs-mobile {display: block;}
-  .recs-desktop {display: none;}
-}
 </style>
 """,
         unsafe_allow_html=True,
@@ -465,15 +541,30 @@ section[data-testid="stSidebar"] {display: none;}
     )
 
 
-def inject_autorefresh(ms: int = 3_600_000) -> None:
+def inject_live_score_refresh() -> None:
+    """Update just live score text, keeping the chart, day and scroll in place."""
     from streamlit.components.v1 import html
 
+    code = Path(__file__).with_name("live_scores.js").read_text(encoding="utf-8")
     html(
-        f"""
-        <script>
-            setTimeout(function() {{
-                window.location.reload();
-            }}, {int(ms)});
+        "<script>" + code + """
+        try {
+            // Dashboard markup lives in the same-origin parent, not this
+            // Streamlit iframe. Replacing the component removes its old timer.
+            const page = window.parent;
+            if (page !== window && page.document) {
+                const key = "__nbaDuoLiveScoreFrameStop";
+                if (typeof page[key] === "function") page[key]();
+                const stop = startNbaDuoLiveScores(page);
+                page[key] = stop;
+                window.addEventListener("pagehide", (event) => {
+                    if (!event.persisted && page[key] === stop) {
+                        stop();
+                        delete page[key];
+                    }
+                });
+            }
+        } catch (_) { /* A sandboxed embed should keep its server-rendered scores. */ }
         </script>
         """,
         height=0,
@@ -719,7 +810,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
         return
 
     now_pt = dt.datetime.now(tz=tz.gettz("America/Los_Angeles"))
-    d = _pick_slate_df(df, slate_day)
+    d = _attach_team_logos(_pick_slate_df(df, slate_day))
     if d is None or d.empty:
         return
 
@@ -910,10 +1001,8 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
                 badges.append(f"<span class='badge' data-tooltip=\"{inj_tooltip}\">❗ Key Injuries</span>")
             badges_html = f"<div class='matchup-badges'>{''.join(badges)}</div>"
 
-        away_logo = py_html.escape(str(row.get("Away logo") or ""))
-        home_logo = py_html.escape(str(row.get("Home logo") or ""))
-        away_img = f"<img src='{away_logo}'/>" if away_logo else ""
-        home_img = f"<img src='{home_logo}'/>" if home_logo else ""
+        away_img = _team_logo_html(str(row.get("Away team") or ""), row.get("_Away logo"))
+        home_img = _team_logo_html(str(row.get("Home team") or ""), row.get("_Home logo"))
 
         return (
             f"<div class='menu-row rec-menu-row'>"
@@ -954,10 +1043,8 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
         home = py_html.escape(home_full)
         away_short = py_html.escape(str(away_mascot))
         home_short = py_html.escape(str(home_mascot))
-        away_logo = py_html.escape(str(r.get("Away logo") or ""))
-        home_logo = py_html.escape(str(r.get("Home logo") or ""))
-        away_img = f"<img src='{away_logo}'/>" if away_logo else ""
-        home_img = f"<img src='{home_logo}'/>" if home_logo else ""
+        away_img = _team_logo_html(away_full, r.get("_Away logo"))
+        home_img = _team_logo_html(home_full, r.get("_Home logo"))
         record_away = py_html.escape(str(r.get("Record (away)", "—")))
         record_home = py_html.escape(str(r.get("Record (home)", "—")))
 
@@ -1689,27 +1776,34 @@ def render_chart(
                 format_func=lambda x: date_to_label.get(x, x),
                 default=default_value,
             )
+            if selected and selected != default_value:
+                st.query_params["day"] = selected
         else:
             selected = selected_date if selected_date in date_options else date_options[0]
         df_plot = df[df["Local date"].astype(str) == selected].copy()
 
+    if df_plot.empty:
+        st.info("No matchups to chart for this date.")
+        return selected
+    df_plot = _attach_team_logos(df_plot)
     chart_date_str = _fmt_m_d_yy_from_iso(selected)
 
     # Responsive sizing: keep mobile optimized, slightly larger on desktop web.
     # Vega-Lite exposes a `width` signal we can use to scale mark sizes.
-    logo_size = alt.ExprRef(expr="clamp(width*0.06, 40, 50)")  # 40px on mobile, up to ~+24% on desktop
+    logo_size = alt.ExprRef(expr="clamp(width * 0.09, 19, 44)")
+    logo_gap = "clamp(width * 0.09, 19, 44) / 2 + 2"
     tip_font_size = alt.ExprRef(expr="clamp(width*0.018, 11, 14)")
-    region_label_font_size = alt.ExprRef(expr="clamp(width*0.040, 24, 30)")
-    legend_font_size = alt.ExprRef(expr="clamp(width*0.020, 13, 16)")
+    region_label_font_size = alt.ExprRef(expr="clamp(width*0.042, 11, 26)")
+    legend_font_size = alt.ExprRef(expr="clamp(width*0.025, 9, 16)")
     circle_size = alt.ExprRef(expr="clamp(width*1.2, 800, 992)")
     hit_target_size = alt.ExprRef(expr="clamp(width*6.3, 4200, 5208)")
-    tips_dy = alt.ExprRef(expr="clamp(width*0.050, 32, 40)")
-    axis_label_font_size = alt.ExprRef(expr="clamp(width*0.030, 20, 25)")
-    axis_sublabel_font_size = alt.ExprRef(expr="clamp(width*0.020, 13, 16)")
-    axis_label_dx = alt.ExprRef(expr="clamp(width*-0.110, -74, -90)")
-    x_axis_title_dy = alt.ExprRef(expr="clamp(width*0.110, 72, 90)")
-    x_axis_subtitle_dy = alt.ExprRef(expr="clamp(width*0.140, 92, 115)")
-    chart_title_font_size = alt.ExprRef(expr="clamp(width*0.033, 21, 26)")
+    tips_dy = alt.ExprRef(expr="clamp(width*0.055, 22, 40)")
+    axis_label_font_size = alt.ExprRef(expr="clamp(width*0.035, 12, 25)")
+    axis_sublabel_font_size = alt.ExprRef(expr="clamp(width*0.025, 9, 16)")
+    axis_label_dx = alt.ExprRef(expr="-clamp(width*0.110, 39, 90)")
+    x_axis_title_dy = alt.ExprRef(expr="clamp(width*0.110, 42, 90)")
+    x_axis_subtitle_dy = alt.ExprRef(expr="clamp(width*0.140, 58, 115)")
+    chart_title_font_size = alt.ExprRef(expr="clamp(width*0.040, 15, 26)")
 
     region_order = ["Must Watch", "Strong Watch", "Watchable", "Skippable", "Hard Skip"]
     region_colors = {
@@ -1941,9 +2035,13 @@ def render_chart(
         tooltip=game_tooltip,
     )
 
-    dx = 0.03
-    away_points = df_plot.assign(_x=(df_plot["Team quality"] - dx).clip(0, 1), _logo=df_plot["Away logo"])
-    home_points = df_plot.assign(_x=(df_plot["Team quality"] + dx).clip(0, 1), _logo=df_plot["Home logo"])
+    def _team_points(side: str) -> pd.DataFrame:
+        return df_plot.assign(
+            _logo=df_plot[f"_{side} logo"],
+            _abbr=df_plot[f"{side} team"].fillna("").astype(str).map(
+                lambda team: get_team_abbr(team) or team[:3].upper() or "—"
+            ),
+        )
     tooltip_cols = [
         "Matchup",
         "Tip short",
@@ -1969,25 +2067,39 @@ def render_chart(
         "Seed radius (home)",
         "Playoff radius (away)",
         "Playoff radius (home)",
-        "_x",
-        "_logo",
     ]
-    tooltip_cols = list(dict.fromkeys([c for c in tooltip_cols if c in df_plot.columns] + ["_x", "_logo"]))
+    tooltip_cols = [c for c in tooltip_cols if c in df_plot.columns] + ["_logo", "_abbr"]
 
     images_df = pd.concat(
         [
-            away_points[tooltip_cols].assign(_side="away"),
-            home_points[tooltip_cols].assign(_side="home"),
+            _team_points("Away")[tooltip_cols].assign(_side="away"),
+            _team_points("Home")[tooltip_cols].assign(_side="home"),
         ],
         ignore_index=True,
     )
-    images_df = images_df[images_df["_logo"].astype(bool)]
-
-    images = alt.Chart(images_df).mark_image(width=logo_size, height=logo_size).encode(
-        x=alt.X("_x:Q", axis=None),
-        y=alt.Y("Closeness:Q", axis=None),
-        url=alt.Url("_logo:N"),
-        tooltip=game_tooltip,
+    team_x = alt.X("Team quality:Q", axis=None)
+    team_y = alt.Y("Closeness:Q", axis=None)
+    # Offset in pixels, not score units: otherwise the two logos overlap when
+    # the same chart is resized to the iPhone's narrower viewport.
+    edge = f"({logo_gap}) + ({logo_size.expr}) / 2 + 1"
+    center = f"(datum['Team quality'] - {QUALITY_FLOOR}) / (1 - {QUALITY_FLOOR}) * width"
+    team_x_offset = alt.ExprRef(expr=(
+        f"clamp({center}, {edge}, width - ({edge})) - ({center})"
+        f" + (datum._side === 'away' ? -({logo_gap}) : ({logo_gap}))"
+    ))
+    valid_logos = images_df["_logo"].notna()
+    images = alt.Chart(images_df[valid_logos]).mark_image(
+        width=logo_size, height=logo_size, xOffset=team_x_offset,
+    ).encode(
+        x=team_x, y=team_y, url=alt.Url("_logo:N"), tooltip=game_tooltip,
+    )
+    fallback_logos = alt.Chart(images_df[~valid_logos]).mark_text(
+        fontSize=alt.ExprRef(expr="clamp(width * 0.03, 9, 13)"),
+        xOffset=team_x_offset,
+        fontWeight=800,
+        color="rgba(49,51,63,0.95)",
+    ).encode(
+        x=team_x, y=team_y, text=alt.Text("_abbr:N"), tooltip=game_tooltip,
     )
 
     tips = alt.Chart(df_plot).mark_text(
@@ -2030,6 +2142,7 @@ def render_chart(
         + circles
         + hit_targets
         + images
+        + fallback_logos
         + tips
         + chart_legend
     ).resolve_scale(x="shared", y="shared").properties(
@@ -2133,10 +2246,8 @@ def _render_menu_row(r) -> str:
         if inj_tooltip:
             badges.append(f"<span class='badge' data-tooltip=\"{inj_tooltip}\">❗ Key Injuries</span>")
         badges_html = f"<div class='matchup-badges'>{''.join(badges)}</div>"
-    away_logo = py_html.escape(str(r["Away logo"]))
-    home_logo = py_html.escape(str(r["Home logo"]))
-    away_img = f"<img src='{away_logo}'/>" if away_logo else ""
-    home_img = f"<img src='{home_logo}'/>" if home_logo else ""
+    away_img = _team_logo_html(away_full, r.get("_Away logo"))
+    home_img = _team_logo_html(home_full, r.get("_Home logo"))
 
     # Avoid leading indentation/newlines: Streamlit Markdown can render it as a code block.
     return f"""<div class="rec-card menu-row">
@@ -2240,6 +2351,7 @@ def render_table(
             day_df = day_df.sort_values("Tip dt (PT)", ascending=True, na_position="last")
         else:
             day_df = day_df.sort_values("aWI", ascending=False)
+        day_df = _attach_team_logos(day_df)
         for _, row in day_df.iterrows():
             st.markdown(_render_menu_row(row), unsafe_allow_html=True)
         return
@@ -2271,6 +2383,7 @@ def render_table(
                 day_df = day_df.sort_values("Tip dt (PT)", ascending=True, na_position="last")
             else:
                 day_df = day_df.sort_values("aWI", ascending=False)
+            day_df = _attach_team_logos(day_df)
             for _, row in day_df.iterrows():
                 st.markdown(_render_menu_row(row), unsafe_allow_html=True)
             st.markdown("<div style='height: 100px;'></div>", unsafe_allow_html=True)
@@ -2296,13 +2409,14 @@ def render_table(
             flat = flat.sort_values("Tip dt (PT)", ascending=True, na_position="last")
         else:
             flat = flat.sort_values("aWI", ascending=False)
+        flat = _attach_team_logos(flat)
         for _, row in flat.iterrows():
             st.markdown(_render_menu_row(row), unsafe_allow_html=True)
 
 
 def render_full_dashboard(title: str, caption: str) -> None:
     inject_base_css()
-    inject_autorefresh()
+    inject_live_score_refresh()
 
     st.markdown("<div id='top'></div>", unsafe_allow_html=True)
     st.title(title)
@@ -2348,7 +2462,8 @@ def render_full_dashboard(title: str, caption: str) -> None:
     except Exception:
         default_day = None
 
-    left, right = st.columns([1.05, 1.0], gap="large")
+    with st.container(key="dashboard_layout"):
+        left, right = st.columns([1.05, 1.0], gap="large")
     with left:
         selected = render_chart(
             df=df,
